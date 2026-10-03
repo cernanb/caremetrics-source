@@ -1,0 +1,15 @@
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Postgres data (if ever bind-mounted instead of a named volume)
+pgdata/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
