@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 from caremetrics.db import connect
 from caremetrics.seed.config import load_settings
+from caremetrics.simulate import appointments
 from caremetrics.simulate.core import SimulationError, Window
 from caremetrics.simulate.profiles import ensure_profiles
 
@@ -34,6 +35,12 @@ ADVISORY_LOCK_KEY = 7_240_002
 
 # Shorter windows are skipped rather than recorded as near-empty runs.
 MIN_WINDOW = timedelta(minutes=1)
+
+# Each step applies the changes that happened inside the window and returns counts by
+# kind. Order matters: later steps build on what earlier ones changed.
+STEPS = (
+    ("appointments", appointments.resolve),
+)
 
 
 def _window(conn: psycopg.Connection, anchor: datetime) -> Window:
@@ -69,8 +76,11 @@ def main() -> None:
             if bootstrapped:
                 counts["patient_profiles_bootstrapped"] = bootstrapped
                 print(f"  bootstrapped {bootstrapped:,} patient profiles")
-            # Simulation steps are added here, slice by slice. Each receives the connection
-            # and the window, applies its changes, and reports a count.
+            for name, step in STEPS:
+                step_counts = step(conn, settings, window)
+                counts.update(step_counts)
+                summary = ", ".join(f"{k}={v:,}" for k, v in step_counts.items()) or "no changes"
+                print(f"  {name:<13} {summary}")
         except SimulationError as exc:
             # Leaving the `with` block via sys.exit rolls the transaction back.
             sys.exit(f"Simulation aborted: {exc}")
