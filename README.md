@@ -21,7 +21,7 @@ There are no dimensions, facts or marts here; building those is the job of the d
 Requirements: Docker (with Compose) and Python 3.12 or newer (developed on 3.14).
 
 ```bash
-git clone <repo-url> caremetrics-source
+git clone https://github.com/cernanb/caremetrics-source.git
 cd caremetrics-source
 
 cp .env.example .env
