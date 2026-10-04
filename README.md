@@ -227,6 +227,8 @@ psql "$DATABASE_URL" -f sql/verify_data.sql
 
 ## Notes for Airbyte
 
+The full ingestion setup (Neon role, BigQuery project, Airbyte connection and verification) is documented in [`docs/ingestion.md`](docs/ingestion.md).
+
 * Every table has a single-column UUID primary key.
 * `updated_at` is a reliable incremental cursor: the trigger sets it on every update, and the large tables have an index on it.
   The three small reference tables (`locations`, `payers`, `providers`) are cheap to sync in full.
