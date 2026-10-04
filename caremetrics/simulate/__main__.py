@@ -25,7 +25,7 @@ from psycopg.types.json import Jsonb
 
 from caremetrics.db import connect
 from caremetrics.seed.config import load_settings
-from caremetrics.simulate import appointments, bookings, claims
+from caremetrics.simulate import appointments, bookings, claims, encounters, patients
 from caremetrics.simulate.core import SimulationError, Window
 from caremetrics.simulate.profiles import ensure_profiles
 
@@ -39,8 +39,10 @@ MIN_WINDOW = timedelta(minutes=1)
 # Each step applies the changes that happened inside the window and returns counts by
 # kind. Order matters: later steps build on what earlier ones changed.
 STEPS = (
+    ("patients", patients.simulate),
     ("bookings", bookings.book),
     ("appointments", appointments.resolve),
+    ("encounters", encounters.amend),
     ("claims", claims.simulate),
 )
 

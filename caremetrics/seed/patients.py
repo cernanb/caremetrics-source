@@ -143,7 +143,7 @@ def _registered_at(
     return max(first_go_live + span * x, born)
 
 
-def _coverage(rng: random.Random, age: int, payers: list[Payer]) -> Payer | None:
+def choose_coverage(rng: random.Random, age: int, payers: list[Payer]) -> Payer | None:
     mix = COVERAGE_SENIOR if age >= 65 else COVERAGE_CHILD if age < 18 else COVERAGE_ADULT
     payer_type = _weighted(rng, mix)
     if payer_type is None:
@@ -152,7 +152,7 @@ def _coverage(rng: random.Random, age: int, payers: list[Payer]) -> Payer | None
     return rng.choices(candidates, weights=[p.profile.market_share for p in candidates])[0]
 
 
-def _utilization(rng: random.Random, age: int) -> float:
+def utilization_for_age(rng: random.Random, age: int) -> float:
     # Young children (well-child visits) and older adults visit more often;
     # lognormal noise gives a long tail of high utilizers.
     if age < 3:
@@ -209,8 +209,8 @@ def generate(settings: SeedSettings, locations: list[Location], payers: list[Pay
                 created_at=created_at,
                 updated_at=updated_at,
                 home_location=home_location,
-                payer=_coverage(rng, age, payers),
-                utilization=_utilization(rng, age),
+                payer=choose_coverage(rng, age, payers),
+                utilization=utilization_for_age(rng, age),
             )
         )
     return patients

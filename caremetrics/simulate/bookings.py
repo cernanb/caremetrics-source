@@ -8,7 +8,9 @@ from its own stream, so the bookings never depend on how often the simulator run
 
 Each booking follows the seed's rules (caremetrics.seed.appointments):
 
-* who:       a registered patient, chosen in proportion to utilization
+* who:       a registered patient, chosen in proportion to utilization. In addition,
+             every patient the simulator registers books a first primary care visit
+             (new_patient) within half an hour of registering.
 * specialty: mostly primary care (pediatrics or family medicine for children, family
              or internal medicine for adults), with an age-dependent specialist share;
              patients usually return to specialists they already see; specialists only
@@ -29,7 +31,6 @@ whether it was cancelled before this booking was made). That makes a booking dep
 only on what happened before it, not on how simulated time was split into runs.
 """
 
-import math
 import uuid
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ from caremetrics.seed.appointments import (
 from caremetrics.seed.config import SeedSettings, uuid7
 from caremetrics.seed.providers import SPECIALTIES, SpecialtyProfile
 from caremetrics.simulate.appointments import decide
-from caremetrics.simulate.core import Window, entity_rng
+from caremetrics.simulate.core import Window, daily_count, entity_rng, local_days, times_on
 
 SPECIALTY_BY_NAME = {s.name: s for s in SPECIALTIES}
 
@@ -72,6 +73,8 @@ BOOKING_HOUR_WEIGHTS = {7: 0.5, 8: 1.0, 9: 1.0, 10: 1.0, 11: 1.0, 12: 0.8, 13: 1
                         14: 1.0, 15: 1.0, 16: 0.9, 17: 0.6, 18: 0.4, 19: 0.3}
 # The earliest slot a booking can take, relative to the moment it is made.
 MIN_NOTICE = timedelta(minutes=30)
+# A newly registered patient books their first visit this many minutes after registering.
+FIRST_VISIT_MINUTES = (1, 30)
 
 PATIENTS = """
     select pt.id, pt.date_of_birth, pt.gender, pt.created_at,
@@ -172,13 +175,7 @@ class _Booker:
         day_end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=CLINIC_TZ)
         mean = (BOOKINGS_PER_UTILIZATION_DAY * self.utilization_registered_by(day_end)
                 * WEEKDAY_FACTOR[day.weekday()])
-        count = max(0, round(rng.gauss(mean, math.sqrt(mean)))) if mean > 0 else 0
-        hours = rng.choices(list(BOOKING_HOUR_WEIGHTS), weights=list(BOOKING_HOUR_WEIGHTS.values()), k=count)
-        return sorted(
-            datetime.combine(day, time(hour), tzinfo=CLINIC_TZ).astimezone(timezone.utc)
-            + timedelta(seconds=rng.uniform(0, 3600))
-            for hour in hours
-        )
+        return times_on(rng, day, CLINIC_TZ, BOOKING_HOUR_WEIGHTS, daily_count(rng, mean))
 
     # -- one booking ---------------------------------------------------------------
 
@@ -247,17 +244,23 @@ class _Booker:
         nearby = [p for p in candidates if p.location_id == patient.home_location_id] or candidates
         return rng.choices(nearby, weights=[1 / (1 + len(self.panel[p.id])) ** 2 for p in nearby])[0]
 
-    def book(self, key: str, booked_at: datetime):
-        """One booking made at `booked_at`, or None if no suitable provider is employed."""
+    def book(self, key: str, booked_at: datetime, patient=None):
+        """One booking made at `booked_at`, or None if no suitable provider is employed.
+
+        With `patient` given, this is that patient's first visit: always primary care.
+        """
         rng = entity_rng(self.settings, "booking", key)
-        patient = self._patient(rng, booked_at)
+        first_visit = patient is not None
+        patient = patient or self._patient(rng, booked_at)
         if patient is None:
             return None
         kept = self._kept(patient, booked_at)
         age = _age_on(patient.date_of_birth, booked_at.astimezone(CLINIC_TZ).date())
 
         share = next(s for upper, s in SPECIALIST_SHARE_BY_AGE if age < upper)
-        specialty = self._specialist(rng, patient, age, kept) if rng.random() < share else None
+        specialty = None
+        if not first_visit and rng.random() < share:
+            specialty = self._specialist(rng, patient, age, kept)
         specialty = specialty or self._primary_specialty(patient, age, kept)
         appointment_type = self._appointment_type(rng, patient, specialty, kept)
         scheduled_at = self._slot(rng, appointment_type, booked_at)
@@ -301,17 +304,24 @@ def book(conn: psycopg.Connection, settings: SeedSettings, window: Window) -> di
         history = cur.execute(APPOINTMENT_HISTORY).fetchall()
     booker = _Booker(settings, window, patients, providers, history)
 
-    first_day = window.start.astimezone(CLINIC_TZ).date()
-    last_day = window.end.astimezone(CLINIC_TZ).date()
-    bookings = []
-    day = first_day
-    while day <= last_day:
+    # (booked_at, key, patient or None) for every booking made inside the window.
+    # Earlier runs already made the ones at or before window.start.
+    events = []
+    for day in local_days(window, CLINIC_TZ):
         for index, booked_at in enumerate(booker.booking_times(day)):
-            # Earlier runs already made the bookings at or before window.start.
             if window.start < booked_at <= window.end:
-                if (row := booker.book(f"{day.isoformat()}:{index}", booked_at)) is not None:
-                    bookings.append(row)
-        day += timedelta(days=1)
+                events.append((booked_at, f"{day.isoformat()}:{index}", None))
+    for patient in patients:
+        if patient.created_at > settings.now:  # registered by the simulator
+            rng = entity_rng(settings, "first-visit", patient.id)
+            booked_at = patient.created_at + timedelta(minutes=rng.uniform(*FIRST_VISIT_MINUTES))
+            if window.start < booked_at <= window.end:
+                events.append((booked_at, f"first-visit:{patient.id}", patient))
+
+    # Chronological order, so each booking sees every booking made before it.
+    events.sort(key=lambda event: (event[0], event[1]))
+    bookings = [row for booked_at, key, patient in events
+                if (row := booker.book(key, booked_at, patient)) is not None]
 
     booked = copy_rows(conn, "appointments", APPOINTMENT_COLUMNS, bookings)
     return {"appointments_booked": booked} if booked else {}
