@@ -65,7 +65,9 @@ HOME_CLINIC_WEIGHTS: dict[str, float] = {
     "Aurora": 25,
     "Lakewood": 20,
     "Boulder": 15,
-    "Colorado Springs": 10,
+    # Only offered to patients registering after it opens. It serves its own city,
+    # which the Denver-area clinics do not, so it draws a large share of new patients.
+    "Colorado Springs": 35,
 }
 
 # payer_type -> weight; None means uninsured / self-pay.

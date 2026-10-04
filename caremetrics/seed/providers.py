@@ -8,7 +8,8 @@ dermatology does many procedures, cardiology bills more per visit, ...).
 
 Staffing rules:
 * Primary care (family, internal, pediatrics) works at every clinic; specialists
-  work at the three established "hub" clinics.
+  work at the three established "hub" clinics. A clinic that opens inside the history
+  window starts small, with one provider per primary care specialty.
 * A provider's created_at is their hire date and is never before their clinic's go-live.
   Most were hired before the history window, some during it (growth), and founding
   staff at a clinic that opens inside the window are hired in its first 90 days.
@@ -149,14 +150,20 @@ def generate(settings: SeedSettings, locations: list[Location]) -> list[Provider
     rng = settings.rng("providers")
     fake = settings.faker("providers")
     by_go_live = sorted(locations, key=lambda l: l.created_at)
-    hubs = by_go_live[:HUB_COUNT]
+    established = [l for l in by_go_live if l.created_at < settings.history_start] or by_go_live
+    new_clinics = [l for l in by_go_live if l not in established]
+    hubs = established[:HUB_COUNT]
 
     providers: list[Provider] = []
     for specialty in SPECIALTIES:
-        pool = by_go_live if specialty.spread == "all" else hubs
+        if specialty.spread == "all":
+            sites = new_clinics[: specialty.headcount]
+            pool = established
+        else:
+            sites, pool = [], hubs
         offset = rng.randrange(len(pool))  # vary which clinic gets the "extra" provider
-        for i in range(specialty.headcount):
-            location = pool[(offset + i) % len(pool)]
+        sites += [pool[(offset + i) % len(pool)] for i in range(specialty.headcount - len(sites))]
+        for location in sites:
             hired_at = _hired_at(rng, location, settings)
             providers.append(
                 Provider(
