@@ -10,9 +10,11 @@ Run directly to check connectivity:
 """
 
 import os
+from collections.abc import Iterable, Sequence
 
 import psycopg
 from dotenv import load_dotenv
+from psycopg import sql
 
 APPLICATION_NAME = "caremetrics-source"
 
@@ -41,6 +43,30 @@ def connect(*, autocommit: bool = False) -> psycopg.Connection:
         application_name=APPLICATION_NAME,
     )
 
+def copy_rows(
+    conn: psycopg.Connection,
+    table: str,
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]],
+) -> int:
+    """Bulk-load rows with COPY ... FROM STDIN and return how many were written.
+
+    `rows` may be a generator: rows are streamed to the server as they are produced,
+    so large tables are never fully materialised in Python memory. psycopg adapts
+    Python values (UUID, datetime, date, Decimal, bool, None) to COPY's text format.
+
+    Runs inside the caller's transaction; the caller decides when to commit.
+    """
+    statement = sql.SQL("copy {table} ({columns}) from stdin").format(
+        table=sql.Identifier(table),
+        columns=sql.SQL(", ").join(sql.Identifier(c) for c in columns),
+    )
+    count = 0
+    with conn.cursor() as cur, cur.copy(statement) as copy:
+        for row in rows:
+            copy.write_row(row)
+            count += 1
+    return count
 
 def main() -> None:
     with connect() as conn:
