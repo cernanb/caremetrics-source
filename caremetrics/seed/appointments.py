@@ -149,7 +149,7 @@ def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
 
 
 @cache
-def _holidays(year: int) -> frozenset[date]:
+def clinic_holidays(year: int) -> frozenset[date]:
     return frozenset({
         date(year, 1, 1),                 # New Year's Day
         _nth_weekday(year, 5, 0, -1),     # Memorial Day
@@ -161,7 +161,7 @@ def _holidays(year: int) -> frozenset[date]:
 
 
 def _clinic_open(rng: random.Random, day: date) -> bool:
-    if day.weekday() == 6 or day in _holidays(day.year):
+    if day.weekday() == 6 or day in clinic_holidays(day.year):
         return False
     if day.weekday() == 5 and rng.random() >= SATURDAY_ACCEPT:
         return False
