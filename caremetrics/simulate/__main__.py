@@ -18,7 +18,6 @@ of simulated time is processed exactly once, even if a run crashes or two start 
 
 import argparse
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import psycopg
@@ -26,6 +25,8 @@ from psycopg.types.json import Jsonb
 
 from caremetrics.db import connect
 from caremetrics.seed.config import load_settings
+from caremetrics.simulate.core import SimulationError, Window
+from caremetrics.simulate.profiles import ensure_profiles
 
 # Transaction-scoped advisory lock, released automatically at commit or rollback.
 # Distinct from the migration runner's key.
@@ -33,15 +34,6 @@ ADVISORY_LOCK_KEY = 7_240_002
 
 # Shorter windows are skipped rather than recorded as near-empty runs.
 MIN_WINDOW = timedelta(minutes=1)
-
-
-@dataclass(frozen=True)
-class Window:
-    start: datetime  # exclusive: end of the previous run, or the seed anchor
-    end: datetime    # inclusive: this run's "now"
-
-    def __str__(self) -> str:
-        return f"{self.start:%Y-%m-%d %H:%M:%S%z} -> {self.end:%Y-%m-%d %H:%M:%S%z} ({self.end - self.start})"
 
 
 def _window(conn: psycopg.Connection, anchor: datetime) -> Window:
@@ -72,10 +64,16 @@ def main() -> None:
 
         print(f"Simulating {window}")
         counts: dict[str, int] = {}
-        # Simulation steps are added here, slice by slice. Each receives the connection
-        # and the window, applies its changes, and reports a count.
-        if not counts:
-            print("  (no simulation steps yet)")
+        try:
+            bootstrapped = ensure_profiles(conn, settings)
+            if bootstrapped:
+                counts["patient_profiles_bootstrapped"] = bootstrapped
+                print(f"  bootstrapped {bootstrapped:,} patient profiles")
+            # Simulation steps are added here, slice by slice. Each receives the connection
+            # and the window, applies its changes, and reports a count.
+        except SimulationError as exc:
+            # Leaving the `with` block via sys.exit rolls the transaction back.
+            sys.exit(f"Simulation aborted: {exc}")
 
         run_id = conn.execute(
             """

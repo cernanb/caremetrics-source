@@ -55,10 +55,13 @@ def copy_rows(
     so large tables are never fully materialised in Python memory. psycopg adapts
     Python values (UUID, datetime, date, Decimal, bool, None) to COPY's text format.
 
+    `table` may be schema-qualified ("simulator.patient_profiles"); each part is
+    quoted separately.
+
     Runs inside the caller's transaction; the caller decides when to commit.
     """
     statement = sql.SQL("copy {table} ({columns}) from stdin").format(
-        table=sql.Identifier(table),
+        table=sql.Identifier(*table.split(".")),
         columns=sql.SQL(", ").join(sql.Identifier(c) for c in columns),
     )
     count = 0
