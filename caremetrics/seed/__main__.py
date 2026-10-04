@@ -21,6 +21,10 @@ from caremetrics.seed.config import load_settings
 # Dependency order. Names are constants, never user input, so building SQL from them is safe.
 TABLES = ("locations", "payers", "providers", "patients", "appointments", "encounters", "claims")
 
+# Simulator state (migration 003) describes the seeded rows and how far simulated time
+# has advanced from the seed's anchor, so a reseed invalidates it and must clear it too.
+SIMULATOR_TABLES = ("simulator.runs", "simulator.patient_profiles")
+
 T = TypeVar("T", bound=Sized)
 
 
@@ -39,7 +43,7 @@ def main() -> None:
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="delete all existing rows in the seeded tables before seeding",
+        help="delete all existing rows in the seeded tables (and simulator state) before seeding",
     )
     args = parser.parse_args()
     settings = load_settings()
@@ -55,10 +59,19 @@ def main() -> None:
         if has_data and not args.reset:
             sys.exit("Database already contains data. Re-run with --reset to replace it.")
         if args.reset:
-            # One TRUNCATE covering every table satisfies the foreign keys between them,
-            # and like everything else here it rolls back if seeding fails.
-            conn.execute("truncate table " + ", ".join(reversed(TABLES)))
-            print("Truncated existing data.")
+            simulator_tables = [
+                t for t in SIMULATOR_TABLES
+                if conn.execute("select to_regclass(%s)", (t,)).fetchone()[0] is not None
+            ]
+            # One TRUNCATE covering every table satisfies the foreign keys between them
+            # (including simulator.patient_profiles -> patients), and like everything
+            # else here it rolls back if seeding fails.
+            conn.execute("truncate table " + ", ".join([*simulator_tables, *reversed(TABLES)]))
+            print("Truncated existing data" + (" and simulator state." if simulator_tables else "."))
+            print(
+                "Note: a reseed restores older updated_at values, which cursor-based Airbyte syncs\n"
+                "cannot see. If this database is replicated, clear and resync its streams afterwards."
+            )
 
         print(f"Seeding (seed={settings.random_seed}, anchor={settings.anchor_date}):")
         seeded_locations = _step("locations", lambda: locations.seed(conn, settings))
