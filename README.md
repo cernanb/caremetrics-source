@@ -51,6 +51,10 @@ All commands run from the repository root with the virtualenv active.
 | `python -m caremetrics.seed` | Load the full dataset into an empty database. |
 | `python -m caremetrics.seed --reset` | Delete all data, then reload it. |
 | `python -m caremetrics.seed.<table>` | Preview one generator (for example `caremetrics.seed.claims`): seeds it and its dependencies inside a transaction, prints summaries and sanity checks, then rolls back. |
+| `python -m caremetrics.simulate` | Advance the data to the current time (see [Simulating ongoing activity](#simulating-ongoing-activity)). |
+| `python -m caremetrics.simulate --dry-run` | Show what a run would change, then roll back. |
+| `python -m caremetrics.simulate --until <datetime>` | Stop simulated time at an earlier instant (ISO 8601, UTC if no offset). |
+| `python -m unittest discover -s tests -v` | Run the test suite (the database-resetting test is skipped unless opted in). |
 | `psql ... < sql/verify_data.sql` | Read-only checks of the seeded data. Exits non-zero on failure. |
 | `psql ... < sql/schema_smoke_test.sql` | Proves the schema rejects invalid rows. Runs in a rolled-back transaction. |
 
@@ -162,6 +166,54 @@ Each module has a pure `generate()` that builds Python objects, a `seed()` that 
 * **All or nothing.**
   `python -m caremetrics.seed` runs in a single transaction, including the `--reset` truncation, so a failed run never leaves a half-seeded database.
 
+## Simulating ongoing activity
+
+The seed describes the clinic as of `SEED_ANCHOR_DATE`.
+`python -m caremetrics.simulate` moves it forward to the current time, so the database keeps changing the way an operational system does and incremental syncs and snapshots have real changes to process.
+
+Each run processes the simulated time since the previous run ended (the first run starts at the anchor):
+
+| Step | What happens |
+|---|---|
+| `patients` | About 5.5 new registrations a day, generated like seeded patients; about 3 record edits a day per 10,000 patients (moves, name changes, corrections). |
+| `bookings` | About 116 bookings a day, scaled with the registered patients, following the seed's rules for specialty, provider continuity, visit type, lead time and clinic calendar. Every new patient books a first primary care visit. |
+| `appointments` | Scheduled appointments whose time has come become completed, cancelled or no_show; completed visits get encounters. Visits still in progress wait for a later run. |
+| `encounters` | About 8% of charts are amended 1 to 14 days after the visit. |
+| `claims` | Insured encounters get claims once charges are captured; open claims move through submitted, accepted or denied, and paid, following each payer's behavior. |
+
+Guarantees:
+
+* **Exactly once.**
+  A run's changes and its record in `simulator.runs` commit together, an advisory lock prevents concurrent runs, and an exclusion constraint rejects overlapping windows.
+* **Cursor-safe.**
+  Events get realistic simulated timestamps (visit times, submission times), while `updated_at` is the real time the row was written.
+  No change can land behind an Airbyte cursor.
+* **Independent of run frequency.**
+  Every decision comes from a random stream belonging to its record or day, so running hourly, daily or once a week produces the same patients, appointments, encounters and claims; only `updated_at` differs.
+  `tests/test_simulate_cadence.py` proves this.
+* **Valid data.**
+  `sql/verify_data.sql` passes after any sequence of runs.
+
+The simulator keeps its own state in the `simulator` schema (run windows and the generator-only patient profiles), which Airbyte does not replicate.
+
+To keep a replicated database live, run the simulator and then sync, as often as you like.
+Do not reseed a replicated database without clearing and resyncing its Airbyte streams afterwards (see [`docs/ingestion.md`](docs/ingestion.md)).
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+* `tests/test_simulate_logic.py`: unit tests for the simulator's pure decision logic (appointment outcomes, claim timelines, visit history rules). No database needed.
+* `tests/test_simulate_cadence.py`: simulates the same period as several runs and as one run, on fresh seeds, and requires identical results; also checks that a repeated run is a no-op and that `verify_data.sql` passes.
+  It **reseeds the database**, so it is skipped unless `DATABASE_URL` points at `localhost` and `CAREMETRICS_TEST_RESETS_DB=1` is set:
+
+  ```bash
+  CAREMETRICS_TEST_RESETS_DB=1 python -m unittest tests.test_simulate_cadence -v
+  python -m caremetrics.simulate   # afterwards, catch the local database up to now
+  ```
+
 ## Migrations
 
 `migrations/` holds plain SQL files named `NNN_description.sql`.
@@ -175,6 +227,7 @@ Each module has a pure `generate()` that builds Python objects, a `seed()` that 
 |---|---|
 | `001_initial_schema.sql` | Tables, constraints and `updated_at` triggers. |
 | `002_source_indexes.sql` | Foreign key indexes, operational query indexes and `updated_at` indexes for incremental sync. |
+| `003_simulator_schema.sql` | The `simulator` schema: run watermark and durable patient profiles. |
 
 ## Project layout
 
@@ -183,15 +236,24 @@ Each module has a pure `generate()` that builds Python objects, a `seed()` that 
 ├── caremetrics/
 │   ├── db.py              # connection helper and streaming COPY
 │   ├── migrate.py         # migration runner
-│   └── seed/
-│       ├── __main__.py    # python -m caremetrics.seed
-│       ├── config.py      # settings, named random streams, UUIDv7
-│       ├── locations.py   payers.py   providers.py   patients.py
-│       └── appointments.py   encounters.py   claims.py
+│   ├── seed/
+│   │   ├── __main__.py    # python -m caremetrics.seed
+│   │   ├── config.py      # settings, named random streams, UUIDv7
+│   │   ├── locations.py   payers.py   providers.py   patients.py
+│   │   └── appointments.py   encounters.py   claims.py
+│   └── simulate/
+│       ├── __main__.py    # python -m caremetrics.simulate
+│       ├── runner.py      # one run: window, lock, steps, bookkeeping
+│       ├── core.py        # window, per-record random streams, calendar helpers
+│       ├── profiles.py    # durable patient profiles
+│       └── patients.py   bookings.py   appointments.py   encounters.py   claims.py
+├── docs/
+│   └── ingestion.md       # Airbyte: Neon -> BigQuery
 ├── migrations/            # plain SQL, applied in order
 ├── sql/
 │   ├── schema_smoke_test.sql
 │   └── verify_data.sql
+├── tests/                 # unittest suite
 ├── docker-compose.yml
 ├── requirements.txt
 └── .env.example
@@ -232,10 +294,10 @@ The full ingestion setup (Neon role, BigQuery project, Airbyte connection and ve
 * Every table has a single-column UUID primary key.
 * `updated_at` is a reliable incremental cursor: the trigger sets it on every update, and the large tables have an index on it.
   The three small reference tables (`locations`, `payers`, `providers`) are cheap to sync in full.
-* The seeded data has no hard deletes: provider departures and cancellations are updates, which incremental sync picks up.
+* Neither the seed nor the simulator hard-deletes rows: provider departures, cancellations and record edits are updates, which incremental sync picks up.
 
-## Out of scope for this phase
+## Out of scope for now
 
-* Ongoing data changes after the initial seed (a mutation script to exercise incremental sync and dbt snapshots).
+* New providers, provider departures and new clinics after the seed (the simulator keeps the seeded staff).
 * Claim resubmissions and corrections, multiple claims per encounter, line items and diagnosis or procedure codes.
 * Patients changing insurance over time.
