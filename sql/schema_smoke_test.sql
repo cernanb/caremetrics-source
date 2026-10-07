@@ -228,35 +228,85 @@ begin
 
     perform pg_temp.expect_violation(
         'paid claim must have a positive payment',
-        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, status, amount_billed, amount_paid, created_at, updated_at)
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
               values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
                       '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
-                      '2025-03-11 09:00+00', 'paid', 185.00, 0, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', '2025-04-01 00:00+00', 'paid', 185.00, 0, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
         'claims_amount_paid_matches_status');
 
     perform pg_temp.expect_violation(
         'denied claim cannot carry a payment',
-        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, status, amount_billed, amount_paid, created_at, updated_at)
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
               values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
                       '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
-                      '2025-03-11 09:00+00', 'denied', 185.00, 50.00, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', null, 'denied', 185.00, 50.00, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
         'claims_amount_paid_matches_status');
 
     perform pg_temp.expect_violation(
         'amount_paid cannot exceed amount_billed',
-        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, status, amount_billed, amount_paid, created_at, updated_at)
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
               values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
                       '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
-                      '2025-03-11 09:00+00', 'paid', 185.00, 200.00, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', '2025-04-01 00:00+00', 'paid', 185.00, 200.00, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
         'claims_amount_paid_range');
+
+    -- Adjudication and payment dates (migration 004). Dates: submitted 03-11, decided 03-25, paid 04-01.
+
+    perform pg_temp.expect_violation(
+        'accepted claim requires adjudicated_at',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', null, null, 'accepted', 185.00, 0, '2025-03-10 15:35+00', '2025-03-25 00:00+00') $sql$,
+        'claims_adjudicated_at_matches_status');
+
+    perform pg_temp.expect_violation(
+        'submitted claim cannot have adjudicated_at',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', null, 'submitted', 185.00, 0, '2025-03-10 15:35+00', '2025-03-25 00:00+00') $sql$,
+        'claims_adjudicated_at_matches_status');
+
+    perform pg_temp.expect_violation(
+        'paid claim requires paid_at',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', null, 'paid', 185.00, 142.50, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+        'claims_paid_at_matches_status');
+
+    perform pg_temp.expect_violation(
+        'denied claim cannot have paid_at',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', '2025-04-01 00:00+00', 'denied', 185.00, 0, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+        'claims_paid_at_matches_status');
+
+    perform pg_temp.expect_violation(
+        'claim cannot be adjudicated before it was submitted',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', '2025-03-10 20:00+00', null, 'denied', 185.00, 0, '2025-03-10 15:35+00', '2025-03-11 09:00+00') $sql$,
+        'claims_adjudicated_after_submitted');
+
+    perform pg_temp.expect_violation(
+        'claim cannot be paid before it was adjudicated',
+        $sql$ insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at)
+              values ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
+                      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
+                      '2025-03-11 09:00+00', '2025-03-25 00:00+00', '2025-03-20 00:00+00', 'paid', 185.00, 142.50, '2025-03-10 15:35+00', '2025-04-01 00:00+00') $sql$,
+        'claims_paid_after_adjudicated');
 end
 $$;
 
 -- A valid paid claim is accepted...
-insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, status, amount_billed, amount_paid, created_at, updated_at) values
+insert into claims (encounter_id, patient_id, provider_id, payer_id, submitted_at, adjudicated_at, paid_at, status, amount_billed, amount_paid, created_at, updated_at) values
     ('60000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001',
      '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001',
-     '2025-03-11 09:00+00', 'paid', 185.00, 142.50, '2025-03-10 15:35+00', '2025-04-02 00:00+00');
+     '2025-03-11 09:00+00', '2025-03-25 00:00+00', '2025-04-02 00:00+00', 'paid', 185.00, 142.50, '2025-03-10 15:35+00', '2025-04-02 00:00+00');
 
 -- ...and a second claim for the same encounter is not.
 do $$
