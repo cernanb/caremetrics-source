@@ -27,7 +27,9 @@ stands at "now" (the anchor date):
 
 So old claims are resolved (paid or denied) while the most recent weeks still
 show pending, submitted and accepted claims, as a live billing system would.
-updated_at is the time of the latest transition.
+Each event that has happened by "now" is stored: submitted_at once submitted,
+adjudicated_at once accepted or denied, paid_at once paid. updated_at is the time
+of the latest transition.
 
 Preview (seeds everything inside a transaction, prints, rolls back):
 
@@ -68,7 +70,8 @@ PAYMENT_POSTING_DAYS = (3, 14)    # accepted -> paid
 CENT = Decimal("0.01")
 
 COLUMNS = ("id", "encounter_id", "patient_id", "provider_id", "payer_id", "submitted_at",
-           "status", "amount_billed", "amount_paid", "created_at", "updated_at")
+           "adjudicated_at", "paid_at", "status", "amount_billed", "amount_paid",
+           "created_at", "updated_at")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,8 @@ class Claim:
     encounter: Encounter
     payer: Payer
     submitted_at: datetime | None
+    adjudicated_at: datetime | None
+    paid_at: datetime | None
     status: str
     amount_billed: Decimal
     amount_paid: Decimal
@@ -123,17 +128,23 @@ def generate(settings: SeedSettings, encounters: list[Encounter]) -> list[Claim]
         paid_at = adjudicated_at + _days(rng, PAYMENT_POSTING_DAYS)
         paid_ratio = rng.uniform(*profile.paid_ratio)
 
+        # Only events that have happened by now are stored; later ones stay null.
         amount_paid = Decimal("0.00")
+        submitted = adjudicated = paid = None
         if submitted_at > now:
-            status, submitted, updated_at = "pending", None, created_at
+            status, updated_at = "pending", created_at
         elif adjudicated_at > now:
-            status, submitted, updated_at = "submitted", submitted_at, submitted_at
+            status, updated_at = "submitted", submitted_at
+            submitted = submitted_at
         elif denied:
-            status, submitted, updated_at = "denied", submitted_at, adjudicated_at
+            status, updated_at = "denied", adjudicated_at
+            submitted, adjudicated = submitted_at, adjudicated_at
         elif paid_at > now:
-            status, submitted, updated_at = "accepted", submitted_at, adjudicated_at
+            status, updated_at = "accepted", adjudicated_at
+            submitted, adjudicated = submitted_at, adjudicated_at
         else:
-            status, submitted, updated_at = "paid", submitted_at, paid_at
+            status, updated_at = "paid", paid_at
+            submitted, adjudicated, paid = submitted_at, adjudicated_at, paid_at
             amount_paid = min(_money(float(amount_billed) * paid_ratio), amount_billed)
 
         claims.append(
@@ -142,6 +153,8 @@ def generate(settings: SeedSettings, encounters: list[Encounter]) -> list[Claim]
                 encounter=encounter,
                 payer=payer,
                 submitted_at=submitted,
+                adjudicated_at=adjudicated,
+                paid_at=paid,
                 status=status,
                 amount_billed=amount_billed,
                 amount_paid=amount_paid,
@@ -162,8 +175,8 @@ def seed(conn: psycopg.Connection, settings: SeedSettings, encounters: list[Enco
         COLUMNS,
         (
             (c.id, c.encounter.id, c.encounter.appointment.patient.id,
-             c.encounter.appointment.provider.id, c.payer.id, c.submitted_at, c.status,
-             c.amount_billed, c.amount_paid, c.created_at, c.updated_at)
+             c.encounter.appointment.provider.id, c.payer.id, c.submitted_at, c.adjudicated_at,
+             c.paid_at, c.status, c.amount_billed, c.amount_paid, c.created_at, c.updated_at)
             for c in claims
         ),
     )
@@ -197,7 +210,7 @@ def main() -> None:
             select py.payer_type, count(*),
                    round(100.0 * count(*) filter (where c.status = 'denied') / count(*), 1),
                    round(100 * avg(c.amount_paid / c.amount_billed) filter (where c.status = 'paid'), 1),
-                   round(avg(extract(epoch from c.updated_at - c.submitted_at) / 86400)
+                   round(avg(extract(epoch from c.paid_at - c.submitted_at) / 86400)
                          filter (where c.status = 'paid'), 1)
             from claims c join payers py on py.id = c.payer_id
             where c.status in ('denied', 'accepted', 'paid')
